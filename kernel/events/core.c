@@ -3340,12 +3340,8 @@ static void perf_remove_from_owner(struct perf_event *event)
 		 * However we can safely take this lock because its the child
 		 * ctx->mutex.
 		 */
-<<<<<<< HEAD
-		mutex_lock_nested(&owner->perf_event_mutex, SINGLE_DEPTH_NESTING);
-=======
 		mutex_lock_nested(&owner->perf_event_mutex,
 					SINGLE_DEPTH_NESTING);
->>>>>>> LA.BF64.1.2.3-01310-8x92.0
 
 		/*
 		 * We have to re-check the event->owner field, if it is cleared
