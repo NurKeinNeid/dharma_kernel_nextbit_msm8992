@@ -489,8 +489,11 @@ static int msm_rpm_read_sleep_ack(void)
      * spinlock from being locked out.
      */
 
-    if (!timeout)
-        return -EAGAIN;
+    if (!timeout) {
+	    pr_err("%s: Timed out waiting for RPM ACK\n",
+		    __func__);
+	    return -EAGAIN;
+    }
 
 	ret = msm_rpm_read_smd_data(buf);
 	if (!ret) {
