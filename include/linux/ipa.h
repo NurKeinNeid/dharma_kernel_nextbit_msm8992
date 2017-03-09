@@ -1231,6 +1231,9 @@ int ipa_rm_set_perf_profile(enum ipa_rm_resource_name resource_name,
 int ipa_rm_add_dependency(enum ipa_rm_resource_name resource_name,
 			enum ipa_rm_resource_name depends_on_name);
 
+int ipa_rm_add_dependency_sync(enum ipa_rm_resource_name resource_name,
+		enum ipa_rm_resource_name depends_on_name);
+
 int ipa_rm_delete_dependency(enum ipa_rm_resource_name resource_name,
 			enum ipa_rm_resource_name depends_on_name);
 
@@ -1355,6 +1358,10 @@ bool ipa_is_client_handle_valid(u32 clnt_hdl);
 enum ipa_client_type ipa_get_client_mapping(int pipe_idx);
 
 enum ipa_rm_resource_name ipa_get_rm_resource_from_ep(int pipe_idx);
+
+bool ipa_get_modem_cfg_emb_pipe_flt(void);
+
+int ipa_disable_apps_wan_cons_deaggr(uint32_t agg_size, uint32_t agg_count);
 
 #else /* CONFIG_IPA */
 
@@ -1797,6 +1804,13 @@ static inline int ipa_rm_add_dependency(
 	return -EPERM;
 }
 
+static inline int ipa_rm_add_dependency_sync(
+		enum ipa_rm_resource_name resource_name,
+		enum ipa_rm_resource_name depends_on_name)
+{
+	return -EPERM;
+}
+
 static inline int ipa_rm_delete_dependency(
 		enum ipa_rm_resource_name resource_name,
 		enum ipa_rm_resource_name depends_on_name)
@@ -2075,6 +2089,15 @@ static inline enum ipa_rm_resource_name ipa_get_rm_resource_from_ep(
 	return -EFAULT;
 }
 
+static inline bool ipa_get_modem_cfg_emb_pipe_flt(void)
+{
+	return -EINVAL;
+}
+
+static inline int ipa_disable_apps_wan_cons_deaggr(void)
+{
+	return -EINVAL;
+}
 #endif /* CONFIG_IPA*/
 
 #endif /* _IPA_H_ */

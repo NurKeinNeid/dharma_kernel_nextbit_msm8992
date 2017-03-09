@@ -903,7 +903,9 @@ int __ipa_commit_flt_v2(enum ipa_ip_type ip)
 
 		if (ipa_get_ep_mapping(IPA_CLIENT_APPS_WAN_CONS) == i ||
 			ipa_get_ep_mapping(IPA_CLIENT_APPS_LAN_CONS) == i ||
-			ipa_get_ep_mapping(IPA_CLIENT_APPS_CMD_PROD) == i) {
+			ipa_get_ep_mapping(IPA_CLIENT_APPS_CMD_PROD) == i ||
+			(ipa_get_ep_mapping(IPA_CLIENT_APPS_LAN_WAN_PROD) == i
+			&& ipa_ctx->modem_cfg_emb_pipe_flt)) {
 			IPADBG("skip %d\n", i);
 			continue;
 		}
@@ -933,7 +935,11 @@ int __ipa_commit_flt_v2(enum ipa_ip_type ip)
 			IPADBG("skip %d\n", i);
 			continue;
 		}
-
+		if (ipa_get_ep_mapping(IPA_CLIENT_APPS_LAN_WAN_PROD) == i &&
+			ipa_ctx->modem_cfg_emb_pipe_flt) {
+			IPADBG("skip %d\n", i);
+			continue;
+		}
 		if (ip == IPA_IP_v4) {
 			local_addrh = ipa_ctx->smem_restricted_bytes +
 				IPA_MEM_PART(v4_flt_ofst) +

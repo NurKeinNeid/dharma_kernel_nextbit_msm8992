@@ -714,6 +714,8 @@ static int mdss_mdp_cmd_wait4pingpong(struct mdss_mdp_ctl *ctl, void *arg)
 	if (rc <= 0) {
 		pr_err("cmd kickoff timed out (%d) ctl=%d, cnt=%d\n",
 			rc, ctl->num, ctx->pp_timeout_report_cnt);
+		printk("BBox;cmd kickoff timed out (%d) ctl=%d, cnt=%d\n",
+			rc, ctl->num, ctx->pp_timeout_report_cnt);
 		if (ctx->pp_timeout_report_cnt == 0) {
 			MDSS_XLOG_TOUT_HANDLER("mdp", "dsi0_ctrl", "dsi0_phy",
 				"dsi1_ctrl", "dsi1_phy", "panic");
@@ -852,6 +854,8 @@ static int mdss_mdp_cmd_panel_on(struct mdss_mdp_ctl *ctl,
 			(void *)&ctx->intf_recovery);
 
 		ctx->intf_stopped = 0;
+		if (sctx)
+			sctx->intf_stopped = 0;
 	} else {
 		pr_err("%s: Panel already on\n", __func__);
 	}
@@ -1210,6 +1214,7 @@ static int mdss_mdp_cmd_stop_sub(struct mdss_mdp_ctl *ctl,
 int mdss_mdp_cmd_stop(struct mdss_mdp_ctl *ctl, int panel_power_state)
 {
 	struct mdss_mdp_cmd_ctx *ctx = ctl->intf_ctx[MASTER_CTX];
+	struct mdss_mdp_cmd_ctx *sctx = NULL;
 	struct mdss_mdp_ctl *sctl = mdss_mdp_get_split_ctl(ctl);
 	bool panel_off = false;
 	bool turn_off_clocks = false;
@@ -1234,6 +1239,9 @@ int mdss_mdp_cmd_stop(struct mdss_mdp_ctl *ctl, int panel_power_state)
 
 	pr_debug("%s: transition from %d --> %d\n", __func__,
 		ctx->panel_power_state, panel_power_state);
+
+	if (sctl)
+		sctx = (struct mdss_mdp_cmd_ctx *) sctl->intf_ctx[MASTER_CTX];
 
 	if (ctl->cmd_autorefresh_en) {
 		int pre_suspend = ctx->autorefresh_pending_frame_cnt;
@@ -1276,6 +1284,9 @@ int mdss_mdp_cmd_stop(struct mdss_mdp_ctl *ctl, int panel_power_state)
 			 */
 			pr_debug("%s: reset intf_stopped flag.\n", __func__);
 			ctx->intf_stopped = 0;
+			if (sctx)
+				sctx->intf_stopped = 0;
+
 			goto end;
 		}
 	}

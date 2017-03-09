@@ -25,6 +25,8 @@
 #include "sdio_cis.h"
 #include "bus.h"
 
+#include "../../../arch/arm64/kernel/fih/fih_sd_status.h"
+
 #define to_mmc_driver(d)	container_of(d, struct mmc_driver, drv)
 #define RUNTIME_SUSPEND_DELAY_MS 10000
 
@@ -102,6 +104,13 @@ mmc_bus_uevent(struct device *dev, struct kobj_uevent_env *env)
 	 */
 	retval = add_uevent_var(env, "MODALIAS=mmc:block");
 
+        if(card->type == MMC_TYPE_SD && strstr(env->buf, "ACTION=add")) {
+                fih_sd_status_setup("1");
+        }
+        else if(card->type == MMC_TYPE_SD && strstr(env->buf, "ACTION=remove")) {
+                fih_sd_status_setup("0");
+        }
+
 	return retval;
 }
 
@@ -127,8 +136,6 @@ static void mmc_bus_shutdown(struct device *dev)
 {
 	struct mmc_driver *drv = to_mmc_driver(dev->driver);
 	struct mmc_card *card = mmc_dev_to_card(dev);
-	struct mmc_host *host = card->host;
-	int ret;
 
 	if (!drv) {
 		pr_debug("%s: %s: drv is NULL\n", dev_name(dev), __func__);
@@ -142,13 +149,6 @@ static void mmc_bus_shutdown(struct device *dev)
 
 	if (dev->driver && drv->shutdown)
 		drv->shutdown(card);
-
-	if (host->bus_ops->shutdown) {
-		ret = host->bus_ops->shutdown(host);
-		if (ret)
-			pr_warn("%s: error %d during shutdown\n",
-				mmc_hostname(host), ret);
-	}
 }
 
 #ifdef CONFIG_PM_SLEEP

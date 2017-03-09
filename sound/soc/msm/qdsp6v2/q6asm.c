@@ -421,6 +421,7 @@ static void q6asm_session_free(struct audio_client *ac)
 {
 	struct list_head		*ptr, *next;
 	struct asm_no_wait_node		*node;
+	unsigned long			flags;
 
 	pr_debug("%s: sessionid[%d]\n", __func__, ac->session);
 	rtac_remove_popp_from_adm_devices(ac->session);
@@ -429,12 +430,13 @@ static void q6asm_session_free(struct audio_client *ac)
 	ac->perf_mode = LEGACY_PCM_MODE;
 	ac->fptr_cache_ops = NULL;
 
+	spin_lock_irqsave(&ac->no_wait_que_spinlock, flags);
 	list_for_each_safe(ptr, next, &ac->no_wait_que) {
 		node = list_entry(ptr, struct asm_no_wait_node, list);
 		list_del(&node->list);
 		kfree(node);
 	}
-	list_del(&ac->no_wait_que);
+	spin_unlock_irqrestore(&ac->no_wait_que_spinlock, flags);
 	return;
 }
 
@@ -1060,6 +1062,8 @@ struct audio_client *q6asm_audio_client_alloc(app_cb cb, void *priv)
 	ac->fptr_cache_ops = NULL;
 	/* DSP expects stream id from 1 */
 	ac->stream_id = 1;
+	INIT_LIST_HEAD(&ac->no_wait_que);
+	spin_lock_init(&ac->no_wait_que_spinlock);
 	ac->apr = apr_register("ADSP", "ASM", \
 			(apr_fn)q6asm_callback,\
 			((ac->session) << 8 | 0x0001),\
@@ -1105,8 +1109,6 @@ struct audio_client *q6asm_audio_client_alloc(app_cb cb, void *priv)
 	}
 	atomic_set(&ac->cmd_state, 0);
 	atomic_set(&ac->nowait_cmd_cnt, 0);
-	spin_lock_init(&ac->no_wait_que_spinlock);
-	INIT_LIST_HEAD(&ac->no_wait_que);
 	atomic_set(&ac->mem_state, 0);
 
 	rc = send_asm_custom_topology(ac);
@@ -1284,7 +1286,7 @@ int q6asm_audio_client_buf_alloc_contiguous(unsigned int dir,
 	ac->port[dir].buf = buf;
 
 	/* check for integer overflow */
-	if ((bufcnt > 0) && ((INT_MAX / bufcnt) < bufsz)) {
+	if ((bufcnt > 0) && ((UINT_MAX / bufcnt) < bufsz)) {
 		pr_err("%s: integer overflow\n", __func__);
 		mutex_unlock(&ac->cmd_lock);
 		goto fail;
@@ -4388,7 +4390,7 @@ int q6asm_stream_media_format_block_aac(struct audio_client *ac,
 }
 
 int q6asm_media_format_block_wma(struct audio_client *ac,
-				void *cfg)
+				void *cfg, int stream_id)
 {
 	struct asm_wmastdv9_fmt_blk_v2 fmt;
 	struct asm_wma_cfg *wma_cfg = (struct asm_wma_cfg *)cfg;
@@ -4400,7 +4402,7 @@ int q6asm_media_format_block_wma(struct audio_client *ac,
 		wma_cfg->block_align, wma_cfg->valid_bits_per_sample,
 		wma_cfg->ch_mask, wma_cfg->encode_opt);
 
-	q6asm_add_hdr(ac, &fmt.hdr, sizeof(fmt), TRUE);
+	q6asm_stream_add_hdr(ac, &fmt.hdr, sizeof(fmt), TRUE, stream_id);
 	atomic_set(&ac->cmd_state, 1);
 
 	fmt.hdr.opcode = ASM_DATA_CMD_MEDIA_FMT_UPDATE_V2;
@@ -4438,7 +4440,7 @@ fail_cmd:
 }
 
 int q6asm_media_format_block_wmapro(struct audio_client *ac,
-				void *cfg)
+				void *cfg, int stream_id)
 {
 	struct asm_wmaprov10_fmt_blk_v2 fmt;
 	struct asm_wmapro_cfg *wmapro_cfg = (struct asm_wmapro_cfg *)cfg;
@@ -4452,7 +4454,7 @@ int q6asm_media_format_block_wmapro(struct audio_client *ac,
 		wmapro_cfg->ch_mask, wmapro_cfg->encode_opt,
 		wmapro_cfg->adv_encode_opt, wmapro_cfg->adv_encode_opt2);
 
-	q6asm_add_hdr(ac, &fmt.hdr, sizeof(fmt), TRUE);
+	q6asm_stream_add_hdr(ac, &fmt.hdr, sizeof(fmt), TRUE, stream_id);
 	atomic_set(&ac->cmd_state, 1);
 
 	fmt.hdr.opcode = ASM_DATA_CMD_MEDIA_FMT_UPDATE_V2;
@@ -4957,7 +4959,7 @@ static int q6asm_memory_unmap_regions(struct audio_client *ac, int dir)
 	struct audio_port_data *port = NULL;
 	struct asm_buffer_node *buf_node = NULL;
 	struct list_head *ptr, *next;
-	uint32_t buf_add;
+	phys_addr_t buf_add;
 	int	rc = 0;
 	int	cmd_size = 0;
 
@@ -4976,7 +4978,7 @@ static int q6asm_memory_unmap_regions(struct audio_client *ac, int dir)
 			TRUE, ((ac->session << 8) | dir));
 	atomic_set(&ac->mem_state, 1);
 	port = &ac->port[dir];
-	buf_add = (uint32_t)port->buf->phys;
+	buf_add = port->buf->phys;
 	mem_unmap.hdr.opcode = ASM_CMD_SHARED_MEM_UNMAP_REGIONS;
 	mem_unmap.mem_map_handle = 0;
 	list_for_each_safe(ptr, next, &ac->port[dir].mem_map_handle) {

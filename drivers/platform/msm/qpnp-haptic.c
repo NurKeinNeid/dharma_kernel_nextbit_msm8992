@@ -25,6 +25,10 @@
 #include <linux/qpnp/qpnp-haptic.h>
 #include "../../staging/android/timed_output.h"
 
+/*FIH, Hubert, 20151021, BBox for touch, vibrator, led {*/
+#include <fih/hwid.h>
+/*} FIH, Hubert, 20151021, BBox for touch, vibrator, led*/
+
 #define QPNP_IRQ_FLAGS	(IRQF_TRIGGER_RISING | \
 			IRQF_TRIGGER_FALLING | \
 			IRQF_ONESHOT)
@@ -291,6 +295,9 @@ struct qpnp_hap {
 	enum qpnp_hap_high_z lra_high_z;
 	u32 timeout_ms;
 	u32 vmax_mv;
+	u32 vtg_min;
+	u32 vtg_max;
+	u32 vtg_default;
 	u32 ilim_ma;
 	u32 sc_deb_cycles;
 	u32 int_pwm_freq_khz;
@@ -653,16 +660,16 @@ static int qpnp_hap_vmax_config(struct qpnp_hap *hap)
 	u8 reg = 0;
 	int rc, temp;
 
-	if (hap->vmax_mv < QPNP_HAP_VMAX_MIN_MV)
-		hap->vmax_mv = QPNP_HAP_VMAX_MIN_MV;
-	else if (hap->vmax_mv > QPNP_HAP_VMAX_MAX_MV)
-		hap->vmax_mv = QPNP_HAP_VMAX_MAX_MV;
+	if (hap->vmax_mv < hap->vtg_min)
+		hap->vmax_mv = hap->vtg_min;
+	else if (hap->vmax_mv > hap->vtg_max)
+		hap->vmax_mv = hap->vtg_max;
 
 	rc = qpnp_hap_read_reg(hap, &reg, QPNP_HAP_VMAX_REG(hap->base));
 	if (rc < 0)
 		return rc;
 	reg &= QPNP_HAP_VMAX_MASK;
-	temp = hap->vmax_mv / QPNP_HAP_VMAX_MIN_MV;
+	temp = hap->vmax_mv / hap->vtg_min;
 	reg |= (temp << QPNP_HAP_VMAX_SHIFT);
 	rc = qpnp_hap_write_reg(hap, &reg, QPNP_HAP_VMAX_REG(hap->base));
 	if (rc)
@@ -1247,6 +1254,79 @@ static ssize_t qpnp_hap_ramp_test_data_show(struct device *dev,
 
 }
 
+static ssize_t qpnp_hap_vmax_mv_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct timed_output_dev *timed_dev = dev_get_drvdata(dev);
+	struct qpnp_hap *hap = container_of(timed_dev, struct qpnp_hap,
+					 timed_dev);
+
+	return snprintf(buf, PAGE_SIZE, "%d\n", hap->vmax_mv);
+}
+
+static ssize_t qpnp_hap_vmax_mv_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct timed_output_dev *timed_dev = dev_get_drvdata(dev);
+	struct qpnp_hap *hap = container_of(timed_dev, struct qpnp_hap,
+					 timed_dev);
+	u32 data;
+	int rc;
+
+	if (sscanf(buf, "%d", &data) != 1)
+		return -EINVAL;
+
+	if (data < hap->vtg_min) {
+		pr_err("%s: mv %d not in range (%d - %d), using min.", __func__, data,
+				hap->vtg_min, hap->vtg_max);
+		data = hap->vtg_min;
+	} else if (data > hap->vtg_max) {
+		pr_err("%s: mv %d not in range (%d - %d), using max.", __func__, data,
+				hap->vtg_min, hap->vtg_max);
+		data = hap->vtg_max;
+	}
+
+	hap->vmax_mv = data;
+	rc = qpnp_hap_vmax_config(hap);
+	if (rc)
+		pr_info("qpnp: error while writing vibration control register\n");
+
+	return strnlen(buf, count);
+}
+
+static ssize_t qpnp_hap_min_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	struct timed_output_dev *timed_dev = dev_get_drvdata(dev);
+	struct qpnp_hap *hap = container_of(timed_dev, struct qpnp_hap,
+					 timed_dev);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", hap->vtg_min);
+}
+
+static ssize_t qpnp_hap_max_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	struct timed_output_dev *timed_dev = dev_get_drvdata(dev);
+	struct qpnp_hap *hap = container_of(timed_dev, struct qpnp_hap,
+					 timed_dev);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", hap->vtg_max);
+}
+
+static ssize_t qpnp_hap_default_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	struct timed_output_dev *timed_dev = dev_get_drvdata(dev);
+	struct qpnp_hap *hap = container_of(timed_dev, struct qpnp_hap,
+					 timed_dev);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", hap->vtg_default);
+}
+
 /* sysfs attributes */
 static struct device_attribute qpnp_hap_attrs[] = {
 	__ATTR(wf_s0, (S_IRUGO | S_IWUSR | S_IWGRP),
@@ -1294,6 +1374,18 @@ static struct device_attribute qpnp_hap_attrs[] = {
 	__ATTR(min_max_test, (S_IRUGO | S_IWUSR | S_IWGRP),
 			qpnp_hap_min_max_test_data_show,
 			qpnp_hap_min_max_test_data_store),
+	__ATTR(vtg_level, (S_IRUGO | S_IWUSR | S_IWGRP),
+			qpnp_hap_vmax_mv_show,
+			qpnp_hap_vmax_mv_store),
+	__ATTR(vtg_min, S_IRUGO,
+			qpnp_hap_min_show,
+			NULL),
+	__ATTR(vtg_max, S_IRUGO,
+			qpnp_hap_max_show,
+			NULL),
+	__ATTR(vtg_default, S_IRUGO,
+			qpnp_hap_default_show,
+			NULL),
 };
 
 static void calculate_lra_code(struct qpnp_hap *hap)
@@ -1442,7 +1534,20 @@ static int qpnp_hap_set(struct qpnp_hap *hap, int on)
 
 	if (hap->play_mode == QPNP_HAP_PWM) {
 		if (on)
+/*FIH, Hubert, 20151021, BBox for touch, vibrator, led {*/
+		{
 			rc = pwm_enable(hap->pwm_info.pwm_dev);
+			if (rc)
+			{
+				if(fih_hwid_fetch(FIH_HWID_PRJ) == FIH_PRJ_NBQ)
+				{
+					printk("BBox::UEC; 19::2\n");
+					printk("BBox::UEC; 19::5\n");
+					return rc;
+				}
+			}
+		}
+/*} FIH, Hubert, 20151021, BBox for touch, vibrator, led*/
 		else
 			pwm_disable(hap->pwm_info.pwm_dev);
 	} else if (hap->play_mode == QPNP_HAP_BUFFER ||
@@ -1602,6 +1707,12 @@ static int qpnp_hap_get_time(struct timed_output_dev *dev)
 		ktime_t r = hrtimer_get_remaining(&hap->hap_timer);
 		return (int)ktime_to_us(r);
 	} else {
+/*FIH, Hubert, 20151021, BBox for touch, vibrator, led {*/
+		if(fih_hwid_fetch(FIH_HWID_PRJ) == FIH_PRJ_NBQ)
+		{
+			printk("BBox::UEC; 19::1\n");
+		}
+/*} FIH, Hubert, 20151021, BBox for touch, vibrator, led*/
 		return 0;
 	}
 }
@@ -2002,6 +2113,33 @@ static int qpnp_hap_parse_dt(struct qpnp_hap *hap)
 		return rc;
 	}
 
+	hap->vtg_min = QPNP_HAP_VMAX_MIN_MV;
+	rc = of_property_read_u32(spmi->dev.of_node,
+			"qcom,hap-vtg-min-mv", &temp);
+	if (!rc) {
+		hap->vtg_min = temp;
+	} else if (rc != -EINVAL) {
+		dev_err(&spmi->dev, "Unable to read vtg_min\n");
+		return rc;
+	}
+
+	hap->vtg_max = QPNP_HAP_VMAX_MAX_MV;
+	rc = of_property_read_u32(spmi->dev.of_node,
+			"qcom,hap-vtg-max-mv", &temp);
+	if (!rc) {
+		hap->vtg_max = temp;
+	} else if (rc != -EINVAL) {
+		dev_err(&spmi->dev, "Unable to read vtg_max\n");
+		return rc;
+	}
+
+	if (hap->vmax_mv < hap->vtg_min)
+		hap->vmax_mv = hap->vtg_min;
+	else if (hap->vmax_mv > hap->vtg_max)
+		hap->vmax_mv = hap->vtg_max;
+
+	hap->vtg_default = hap->vmax_mv;
+
 	hap->ilim_ma = QPNP_HAP_ILIM_MIN_MV;
 	rc = of_property_read_u32(spmi->dev.of_node,
 			"qcom,ilim-ma", &temp);
@@ -2121,6 +2259,12 @@ static int qpnp_haptic_probe(struct spmi_device *spmi)
 	hap_resource = spmi_get_resource(spmi, 0, IORESOURCE_MEM, 0);
 	if (!hap_resource) {
 		dev_err(&spmi->dev, "Unable to get haptic base address\n");
+/*FIH, Hubert, 20151021, BBox for touch, vibrator, led {*/
+		if(fih_hwid_fetch(FIH_HWID_PRJ) == FIH_PRJ_NBQ)
+		{
+			printk("BBox::UEC; 19::0\n");
+		}
+/*} FIH, Hubert, 20151021, BBox for touch, vibrator, led*/
 		return -EINVAL;
 	}
 	hap->base = hap_resource->start;
@@ -2130,12 +2274,24 @@ static int qpnp_haptic_probe(struct spmi_device *spmi)
 	rc = qpnp_hap_parse_dt(hap);
 	if (rc) {
 		dev_err(&spmi->dev, "DT parsing failed\n");
+/*FIH, Hubert, 20151021, BBox for touch, vibrator, led {*/
+		if(fih_hwid_fetch(FIH_HWID_PRJ) == FIH_PRJ_NBQ)
+		{
+			printk("BBox::UEC; 19::0\n");
+		}
+/*} FIH, Hubert, 20151021, BBox for touch, vibrator, led*/
 		return rc;
 	}
 
 	rc = qpnp_hap_config(hap);
 	if (rc) {
 		dev_err(&spmi->dev, "hap config failed\n");
+/*FIH, Hubert, 20151021, BBox for touch, vibrator, led {*/
+		if(fih_hwid_fetch(FIH_HWID_PRJ) == FIH_PRJ_NBQ)
+		{
+			printk("BBox::UEC; 19::0\n");
+		}
+/*} FIH, Hubert, 20151021, BBox for touch, vibrator, led*/
 		return rc;
 	}
 
@@ -2157,6 +2313,12 @@ static int qpnp_haptic_probe(struct spmi_device *spmi)
 	rc = timed_output_dev_register(&hap->timed_dev);
 	if (rc < 0) {
 		dev_err(&spmi->dev, "timed_output registration failed\n");
+/*FIH, Hubert, 20151021, BBox for touch, vibrator, led {*/
+		if(fih_hwid_fetch(FIH_HWID_PRJ) == FIH_PRJ_NBQ)
+		{
+			printk("BBox::UEC; 19::0\n");
+		}
+/*} FIH, Hubert, 20151021, BBox for touch, vibrator, led*/
 		goto timed_output_fail;
 	}
 
@@ -2172,6 +2334,12 @@ static int qpnp_haptic_probe(struct spmi_device *spmi)
 				&qpnp_hap_attrs[i].attr);
 		if (rc < 0) {
 			dev_err(&spmi->dev, "sysfs creation failed\n");
+/*FIH, Hubert, 20151021, BBox for touch, vibrator, led {*/
+			if(fih_hwid_fetch(FIH_HWID_PRJ) == FIH_PRJ_NBQ)
+			{
+				printk("BBox::UEC; 19::0\n");
+			}
+/*} FIH, Hubert, 20151021, BBox for touch, vibrator, led*/
 			goto sysfs_fail;
 		}
 	}

@@ -969,7 +969,12 @@ static void pcie_phy_init(struct msm_pcie_dev_t *dev)
 
 	PCIE_DBG(dev, "RC%d: Initializing 20nm QMP phy - 19.2MHz\n",
 		dev->rc_idx);
-
+	///Force phy to reset before init. ///
+	msm_pcie_write_reg(dev->phy, PCIE_PHY_SW_RESET, 0x01);
+	msm_pcie_write_reg(dev->phy, PCIE_PHY_POWER_DOWN_CONTROL, 0x0);
+	wmb();
+	udelay(1000);
+	///Force phy to reset before init. ///
 	msm_pcie_write_reg(dev->phy, PCIE_PHY_POWER_DOWN_CONTROL, 0x03);
 
 	msm_pcie_write_reg(dev->phy, QSERDES_COM_SYSCLK_EN_SEL_TXBAND, 0x08);
@@ -3251,7 +3256,7 @@ int msm_pcie_enable(struct msm_pcie_dev_t *dev, u32 options)
 
 	/* assert PCIe reset link to keep EP in reset */
 
-	PCIE_INFO(dev, "PCIe: Assert the reset of endpoint of RC%d.\n",
+	PCIE_DBG(dev, "PCIe: Assert the reset of endpoint of RC%d.\n",
 		dev->rc_idx);
 	gpio_set_value(dev->gpio[MSM_PCIE_GPIO_PERST].num,
 				dev->gpio[MSM_PCIE_GPIO_PERST].on);
@@ -3262,16 +3267,21 @@ int msm_pcie_enable(struct msm_pcie_dev_t *dev, u32 options)
 
 	if (options & PM_VREG) {
 		ret = msm_pcie_vreg_init(dev);
-		if (ret)
+		if (ret){
+			pr_info("BBox::UEC; 13::0\n");
+		  pr_info("BBox; %s: PCIE for Wi-Fi Power-up failed. ret=%d\n",__func__, ret);
 			goto out;
+		}
 	}
 
 	/* enable clocks */
 	if (options & PM_CLK) {
 		ret = msm_pcie_clk_init(dev);
 		wmb();
-		if (ret)
+		if (ret){
+			pr_info("BBox; %s: PCIE for Wi-Fi enable clocks failed. ret=%d\n",__func__, ret);
 			goto clk_fail;
+		}
 	}
 
 	if (dev->scm_dev_id) {
@@ -3306,8 +3316,10 @@ int msm_pcie_enable(struct msm_pcie_dev_t *dev, u32 options)
 		/* Enable the pipe clock */
 		ret = msm_pcie_pipe_clk_init(dev);
 		wmb();
-		if (ret)
+		if (ret){
+			pr_info("BBox; %s: PCIE for Wi-Fi Enable the pipe clock failed. ret=%d\n",__func__, ret);
 			goto link_fail;
+		}
 	}
 
 	PCIE_DBG(dev, "RC%d: waiting for phy ready...\n", dev->rc_idx);
@@ -3324,7 +3336,7 @@ int msm_pcie_enable(struct msm_pcie_dev_t *dev, u32 options)
 		dev->rc_idx, retries);
 
 	if (pcie_phy_is_ready(dev))
-		PCIE_INFO(dev, "PCIe RC%d PHY is ready!\n", dev->rc_idx);
+		PCIE_DBG(dev, "PCIe RC%d PHY is ready!\n", dev->rc_idx);
 	else {
 		PCIE_ERR(dev, "PCIe PHY RC%d failed to come up!\n",
 			dev->rc_idx);
@@ -3338,7 +3350,7 @@ int msm_pcie_enable(struct msm_pcie_dev_t *dev, u32 options)
 
 	/* de-assert PCIe reset link to bring EP out of reset */
 
-	PCIE_INFO(dev, "PCIe: Release the reset of endpoint of RC%d.\n",
+	PCIE_DBG(dev, "PCIe: Release the reset of endpoint of RC%d.\n",
 		dev->rc_idx);
 	gpio_set_value(dev->gpio[MSM_PCIE_GPIO_PERST].num,
 				1 - dev->gpio[MSM_PCIE_GPIO_PERST].on);
@@ -3366,9 +3378,9 @@ int msm_pcie_enable(struct msm_pcie_dev_t *dev, u32 options)
 		msm_pcie_confirm_linkup(dev, false, false)) {
 		PCIE_DBG(dev, "Link is up after %d checkings\n",
 			link_check_count);
-		PCIE_INFO(dev, "PCIe RC%d link initialized\n", dev->rc_idx);
+		PCIE_DBG(dev, "PCIe RC%d link initialized\n", dev->rc_idx);
 	} else {
-		PCIE_INFO(dev, "PCIe: Assert the reset of endpoint of RC%d.\n",
+		PCIE_DBG(dev, "PCIe: Assert the reset of endpoint of RC%d.\n",
 			dev->rc_idx);
 		gpio_set_value(dev->gpio[MSM_PCIE_GPIO_PERST].num,
 			dev->gpio[MSM_PCIE_GPIO_PERST].on);
@@ -3422,7 +3434,7 @@ void msm_pcie_disable(struct msm_pcie_dev_t *dev, u32 options)
 	dev->power_on = false;
 	dev->link_turned_off_counter++;
 
-	PCIE_INFO(dev, "PCIe: Assert the reset of endpoint of RC%d.\n",
+	PCIE_DBG(dev, "PCIe: Assert the reset of endpoint of RC%d.\n",
 		dev->rc_idx);
 
 	gpio_set_value(dev->gpio[MSM_PCIE_GPIO_PERST].num,
@@ -3468,10 +3480,7 @@ static struct pci_bus *msm_pcie_scan_bus(int nr,
 						struct pci_sys_data *sys)
 {
 	struct pci_bus *bus = NULL;
-	struct msm_pcie_dev_t *dev =
-			(struct msm_pcie_dev_t *)(sys->private_data);
-
-	PCIE_DBG(dev, "bus %d\n", nr);
+	PCIE_DBG((struct msm_pcie_dev_t *)(sys->private_data), "bus %d\n", nr);
 
 	bus = pci_scan_root_bus(NULL, sys->busnr, &msm_pcie_ops, sys,
 					&sys->resources);
@@ -4938,8 +4947,8 @@ module_exit(pcie_exit);
 /* RC do not represent the right class; set it to PCI_CLASS_BRIDGE_PCI */
 static void msm_pcie_fixup_early(struct pci_dev *dev)
 {
-	struct msm_pcie_dev_t *pcie_dev = PCIE_BUS_PRIV_DATA(dev);
-	PCIE_DBG(pcie_dev, "hdr_type %d\n", dev->hdr_type);
+	PCIE_DBG((struct msm_pcie_dev_t*)PCIE_BUS_PRIV_DATA(dev), "hdr_type %d\n",
+		dev->hdr_type);
 	if (dev->hdr_type == 1)
 		dev->class = (dev->class & 0xff) | (PCI_CLASS_BRIDGE_PCI << 8);
 }

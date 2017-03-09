@@ -1107,7 +1107,6 @@ TRACE_EVENT(kgsl_msg,
 	)
 );
 
-
 #endif /* _KGSL_TRACE_H */
 
 /* This part must be outside protection */

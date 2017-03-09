@@ -2730,6 +2730,45 @@ void ipa_dec_client_disable_clks(void)
 	ipa_active_clients_unlock();
 }
 
+/**
+* ipa_inc_acquire_wakelock() - Increase active clients counter, and
+* acquire wakelock if necessary
+*
+* Return codes:
+* None
+*/
+void ipa_inc_acquire_wakelock(enum ipa_wakelock_ref_client ref_client)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&ipa_ctx->wakelock_ref_cnt.spinlock, flags);
+	ipa_ctx->wakelock_ref_cnt.cnt |= (1 << ref_client);
+	if (ipa_ctx->wakelock_ref_cnt.cnt)
+		__pm_stay_awake(&ipa_ctx->w_lock);
+	IPADBG("active wakelock ref cnt = %d client enum %d\n", ipa_ctx->wakelock_ref_cnt.cnt, ref_client);
+	spin_unlock_irqrestore(&ipa_ctx->wakelock_ref_cnt.spinlock, flags);
+}
+
+/**
+ * ipa_dec_release_wakelock() - Decrease active clients counter
+ *
+ * In case if the ref count is 0, release the wakelock.
+ *
+ * Return codes:
+ * None
+ */
+void ipa_dec_release_wakelock(enum ipa_wakelock_ref_client ref_client)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&ipa_ctx->wakelock_ref_cnt.spinlock, flags);
+	ipa_ctx->wakelock_ref_cnt.cnt &= ~(1 << ref_client);
+	IPADBG("active wakelock ref cnt = %d client enum %d \n", ipa_ctx->wakelock_ref_cnt.cnt, ref_client);
+	if (ipa_ctx->wakelock_ref_cnt.cnt == 0)
+		__pm_relax(&ipa_ctx->w_lock);
+	spin_unlock_irqrestore(&ipa_ctx->wakelock_ref_cnt.spinlock, flags);
+}
+
 static int ipa_setup_bam_cfg(const struct ipa_plat_drv_res *res)
 {
 	void *ipa_bam_mmio;
@@ -2959,6 +2998,7 @@ static void ipa_sps_process_irq(struct work_struct *work)
 
 	/* release IPA clocks */
 	ipa_sps_process_irq_schedule_rel();
+	ipa_dec_release_wakelock(IPA_WAKELOCK_REF_CLIENT_SPS);
 	spin_unlock_irqrestore(&ipa_ctx->sps_pm.lock, flags);
 }
 
@@ -3051,6 +3091,7 @@ static void sps_event_cb(enum sps_callback_case event, void *param)
 				ipa_ctx->sps_pm.res_granted = true;
 				*ready = true;
 			} else {
+				ipa_inc_acquire_wakelock(IPA_WAKELOCK_REF_CLIENT_SPS);
 				queue_work(ipa_ctx->sps_power_mgmt_wq,
 					   &ipa_sps_process_irq_work);
 				*ready = false;
@@ -3138,6 +3179,7 @@ static int ipa_init(const struct ipa_plat_drv_res *resource_p,
 	ipa_ctx->use_ipa_teth_bridge = resource_p->use_ipa_teth_bridge;
 	ipa_ctx->ipa_bam_remote_mode = resource_p->ipa_bam_remote_mode;
 	ipa_ctx->wan_rx_ring_size = resource_p->wan_rx_ring_size;
+	ipa_ctx->modem_cfg_emb_pipe_flt = resource_p->modem_cfg_emb_pipe_flt;
 
 	/* default aggregation parameters */
 	ipa_ctx->aggregation_type = IPA_MBIM_16;
@@ -3486,14 +3528,9 @@ static int ipa_init(const struct ipa_plat_drv_res *resource_p,
 		goto fail_nat_dev_add;
 	}
 
-	/* Create workqueue for power management */
-	ipa_ctx->power_mgmt_wq =
-		create_singlethread_workqueue("ipa_power_mgmt");
-	if (!ipa_ctx->power_mgmt_wq) {
-		IPAERR("failed to create wq\n");
-		result = -ENOMEM;
-		goto fail_init_hw;
-	}
+	/* Create a wakeup source. */
+	wakeup_source_init(&ipa_ctx->w_lock, "IPA_WS");
+	spin_lock_init(&ipa_ctx->wakelock_ref_cnt.spinlock);
 
 	/* Initialize IPA RM (resource manager) */
 	result = ipa_rm_initialize();
@@ -3636,6 +3673,7 @@ static int get_ipa_dts_configuration(struct platform_device *pdev,
 	ipa_drv_res->ipa_hw_mode = 0;
 	ipa_drv_res->ipa_bam_remote_mode = false;
 	ipa_drv_res->wan_rx_ring_size = IPA_GENERIC_RX_POOL_SZ;
+	ipa_drv_res->modem_cfg_emb_pipe_flt = false;
 
 	/* Get IPA HW Version */
 	result = of_property_read_u32(pdev->dev.of_node, "qcom,ipa-hw-ver",
@@ -3677,6 +3715,13 @@ static int get_ipa_dts_configuration(struct platform_device *pdev,
 			"qcom,ipa-bam-remote-mode");
 	IPADBG(": ipa bam remote mode = %s\n",
 			ipa_drv_res->ipa_bam_remote_mode
+			? "True" : "False");
+
+	ipa_drv_res->modem_cfg_emb_pipe_flt =
+			of_property_read_bool(pdev->dev.of_node,
+			"qcom,modem-cfg-emb-pipe-flt");
+	IPADBG(": modem configure embedded pipe filtering = %s\n",
+			ipa_drv_res->modem_cfg_emb_pipe_flt
 			? "True" : "False");
 
 	/* Get IPA wrapper address */

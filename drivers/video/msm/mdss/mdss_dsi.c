@@ -23,15 +23,57 @@
 #include <linux/regulator/consumer.h>
 #include <linux/leds-qpnp-wled.h>
 #include <linux/clk.h>
+#include <linux/pm_qos.h>
 
 #include "mdss.h"
 #include "mdss_panel.h"
 #include "mdss_dsi.h"
 #include "mdss_debug.h"
+#include "mdss_livedisplay.h"
+
+/*FIH, Hubert, 20151127, use lcm regs (DBh) to work with TP FW upgrade {*/
+extern ssize_t panel_print_status2(struct mdss_dsi_ctrl_pdata *ctrl_pdata);
+/*} FIH, Hubert, 20151127, use lcm regs (DBh) to work with TP FW upgrade*/
 
 #define XO_CLK_RATE	19200000
 
 static struct dsi_drv_cm_data shared_ctrl_data;
+
+#define DSI_DISABLE_PC_LATENCY 100
+#define DSI_ENABLE_PC_LATENCY PM_QOS_DEFAULT_VALUE
+
+static struct pm_qos_request mdss_dsi_pm_qos_request;
+
+static void mdss_dsi_pm_qos_add_request(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
+{
+	struct irq_info *irq_info;
+
+	if (!ctrl_pdata)
+		return;
+
+	irq_info = ctrl_pdata->dsi_hw->irq_info;
+	if (!irq_info)
+		return;
+
+	mdss_dsi_pm_qos_request.type = PM_QOS_REQ_AFFINE_IRQ;
+	mdss_dsi_pm_qos_request.irq = irq_info->irq;
+
+	pr_debug("%s: add request", __func__);
+	pm_qos_add_request(&mdss_dsi_pm_qos_request, PM_QOS_CPU_DMA_LATENCY,
+			PM_QOS_DEFAULT_VALUE);
+}
+
+static void mdss_dsi_pm_qos_remove_request(void)
+{
+	pr_debug("%s: remove request", __func__);
+	pm_qos_remove_request(&mdss_dsi_pm_qos_request);
+}
+
+static void mdss_dsi_pm_qos_update_request(int val)
+{
+	pr_debug("%s: update request %d", __func__, val);
+	pm_qos_update_request(&mdss_dsi_pm_qos_request, val);
+}
 
 static int mdss_dsi_pinctrl_set_state(struct mdss_dsi_ctrl_pdata *ctrl_pdata,
 					bool active);
@@ -153,7 +195,6 @@ static int mdss_dsi_panel_power_off(struct mdss_panel_data *pdata)
 {
 	int ret = 0;
 	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
-	int i = 0;
 
 	if (pdata == NULL) {
 		pr_err("%s: Invalid input data\n", __func__);
@@ -182,20 +223,12 @@ static int mdss_dsi_panel_power_off(struct mdss_panel_data *pdata)
 		udelay(2000);
 	}
 
-	for (i = DSI_MAX_PM - 1; i >= 0; i--) {
-		/*
-		 * Core power module will be disabled when the
-		 * clocks are disabled
-		 */
-		if (DSI_CORE_PM == i)
-			continue;
-		ret = msm_dss_enable_vreg(
-			ctrl_pdata->power_data[i].vreg_config,
-			ctrl_pdata->power_data[i].num_vreg, 0);
-		if (ret)
-			pr_err("%s: failed to disable vregs for %s\n",
-				__func__, __mdss_dsi_pm_name(i));
-	}
+	ret = msm_dss_enable_vreg(
+		ctrl_pdata->power_data[DSI_PANEL_PM].vreg_config,
+		ctrl_pdata->power_data[DSI_PANEL_PM].num_vreg, 0);
+	if (ret)
+		pr_err("%s: failed to disable vregs for %s\n",
+			__func__, __mdss_dsi_pm_name(DSI_PANEL_PM));
 
 end:
 	return ret;
@@ -205,7 +238,6 @@ static int mdss_dsi_panel_power_on(struct mdss_panel_data *pdata)
 {
 	int ret = 0;
 	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
-	int i = 0;
 
 	if (pdata == NULL) {
 		pr_err("%s: Invalid input data\n", __func__);
@@ -215,21 +247,13 @@ static int mdss_dsi_panel_power_on(struct mdss_panel_data *pdata)
 	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
 				panel_data);
 
-	for (i = 0; i < DSI_MAX_PM; i++) {
-		/*
-		 * Core power module will be enabled when the
-		 * clocks are enabled
-		 */
-		if (DSI_CORE_PM == i)
-			continue;
-		ret = msm_dss_enable_vreg(
-			ctrl_pdata->power_data[i].vreg_config,
-			ctrl_pdata->power_data[i].num_vreg, 1);
-		if (ret) {
-			pr_err("%s: failed to enable vregs for %s\n",
-				__func__, __mdss_dsi_pm_name(i));
-			goto error;
-		}
+	ret = msm_dss_enable_vreg(
+		ctrl_pdata->power_data[DSI_PANEL_PM].vreg_config,
+		ctrl_pdata->power_data[DSI_PANEL_PM].num_vreg, 1);
+	if (ret) {
+		pr_err("%s: failed to enable vregs for %s\n",
+			__func__, __mdss_dsi_pm_name(DSI_PANEL_PM));
+		return ret;
 	}
 	if (ctrl_pdata->panel_bias_vreg) {
 		pr_debug("%s: Enable panel bias vreg. ndx = %d\n",
@@ -239,8 +263,6 @@ static int mdss_dsi_panel_power_on(struct mdss_panel_data *pdata)
 		/* Add delay recommended by panel specs */
 		udelay(2000);
 	}
-
-	i--;
 
 	/*
 	 * If continuous splash screen feature is enabled, then we need to
@@ -259,13 +281,6 @@ static int mdss_dsi_panel_power_on(struct mdss_panel_data *pdata)
 					__func__, ret);
 	}
 
-error:
-	if (ret) {
-		for (; i >= 0; i--)
-			msm_dss_enable_vreg(
-				ctrl_pdata->power_data[i].vreg_config,
-				ctrl_pdata->power_data[i].num_vreg, 0);
-	}
 	return ret;
 }
 
@@ -866,6 +881,8 @@ static int mdss_dsi_unblank(struct mdss_panel_data *pdata)
 			__func__, ctrl_pdata, ctrl_pdata->ndx,
 			pdata->panel_info.blank_state, ctrl_pdata->ctrl_state);
 
+	mdss_dsi_pm_qos_update_request(DSI_DISABLE_PC_LATENCY);
+
 	mdss_dsi_clk_ctrl(ctrl_pdata, DSI_ALL_CLKS, 1);
 
 	if (pdata->panel_info.blank_state == MDSS_PANEL_BLANK_LOW_POWER) {
@@ -894,8 +911,17 @@ static int mdss_dsi_unblank(struct mdss_panel_data *pdata)
 			enable_irq(gpio_to_irq(ctrl_pdata->disp_te_gpio));
 	}
 
+// FIH, Hubert, 20151127, use lcm regs (DBh) to work with TP FW upgrade {
+	panel_print_status2(ctrl_pdata);
+//} FIH, Hubert, 20151127, use lcm regs (DBh) to work with TP FW upgrade
+
+	mdss_livedisplay_update(ctrl_pdata, MODE_UPDATE_ALL);
+
 error:
 	mdss_dsi_clk_ctrl(ctrl_pdata, DSI_ALL_CLKS, 0);
+
+	mdss_dsi_pm_qos_update_request(DSI_ENABLE_PC_LATENCY);
+
 	pr_debug("%s-:\n", __func__);
 
 	return ret;
@@ -1832,7 +1858,11 @@ static int mdss_dsi_ctrl_probe(struct platform_device *pdev)
 		}
 		disable_irq(gpio_to_irq(ctrl_pdata->disp_te_gpio));
 	}
+
+	mdss_dsi_pm_qos_add_request(ctrl_pdata);
+
 	pr_debug("%s: Dsi Ctrl->%d initialized\n", __func__, index);
+
 	return 0;
 
 error_pan_node:
@@ -1858,6 +1888,8 @@ static int mdss_dsi_ctrl_remove(struct platform_device *pdev)
 		pr_err("%s: no driver data\n", __func__);
 		return -ENODEV;
 	}
+
+	mdss_dsi_pm_qos_remove_request();
 
 	for (i = DSI_MAX_PM - 1; i >= 0; i--) {
 		if (msm_dss_config_vreg(&pdev->dev,
@@ -2106,6 +2138,18 @@ int dsi_panel_device_register(struct device_node *pan_node,
 			pr_err("%s:%d, Disp_en gpio not specified\n",
 					__func__, __LINE__);
 	}
+
+//<<[NBQ-16] EricHsieh, Implement the OTM1926C CTC 5.2" panel 	
+	if (ctrl_pdata->disp_ldo_gpio <= 0) {
+		ctrl_pdata->disp_ldo_gpio = of_get_named_gpio(
+			ctrl_pdev->dev.of_node,
+			"qcom,platform-ldo-gpio", 0);
+
+		if (!gpio_is_valid(ctrl_pdata->disp_en_gpio))
+			pr_err("%s:%d, Disp_en gpio not specified\n",
+					__func__, __LINE__);
+	}
+//>>[NBQ-16] EricHsieh,END
 
 	ctrl_pdata->disp_te_gpio = of_get_named_gpio(ctrl_pdev->dev.of_node,
 		"qcom,platform-te-gpio", 0);

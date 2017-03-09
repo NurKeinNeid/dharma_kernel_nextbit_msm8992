@@ -22,9 +22,12 @@
 #include <linux/sysrq.h>
 #include <linux/init.h>
 #include <linux/nmi.h>
+#include <linux/console.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/exception.h>
+
+#include "../arch/arm64/kernel/fih/fih_rere.h" /* FIH,Jimi,2015/08/29 add for support fih rere */
 
 #define PANIC_TIMER_STEP 100
 #define PANIC_BLINK_SPD 18
@@ -82,6 +85,12 @@ void panic(const char *fmt, ...)
 	long i, i_next = 0;
 	int state = 0;
 
+        /* FIH,Jimi,2015/08/29 add for support fih rere*/
+        fih_rere_wt_imem(FIH_RERE_KERNEL_PANIC);
+        pr_info("%s:  rere = 0x%08x\n", __func__, fih_rere_rd_imem());
+        /* FIH,Jimi,2015/08/29 add for support fih rere*/
+
+
 	trace_kernel_panic(0);
 	/*
 	 * Disable local interrupts. This will prevent panic_smp_self_stop
@@ -134,9 +143,18 @@ void panic(const char *fmt, ...)
 
 	kmsg_dump(KMSG_DUMP_PANIC);
 
+	/* print last_kmsg even after console suspend */
+	if (is_console_suspended())
+		resume_console();
+
+	if (is_console_locked())
+		console_unlock();
+
 	atomic_notifier_call_chain(&panic_notifier_list, 0, buf);
 
 	bust_spinlocks(0);
+
+	console_flush_on_panic();
 
 	if (!panic_blink)
 		panic_blink = no_blink;

@@ -24,6 +24,7 @@
 #include <linux/string.h>
 
 #include "mdss_dsi.h"
+#include "mdss_livedisplay.h"
 
 #define DT_CMD_HDR 6
 #define MIN_REFRESH_RATE 30
@@ -140,13 +141,86 @@ u32 mdss_dsi_panel_cmd_read(struct mdss_dsi_ctrl_pdata *ctrl, char cmd0,
 
 	return 0;
 }
+static char panel_reg[2] = {0x0A, 0x00};
+static ssize_t panel_print_status(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
+{
+	int rx_len = 0;
+	int i, lx = 0;
+	char panel_reg_buf[128] = {0x0};
+	char rx_buf[128] = {0x0};
 
-static void mdss_dsi_panel_cmds_send(struct mdss_dsi_ctrl_pdata *ctrl,
+	mdss_dsi_panel_cmd_read(ctrl_pdata, panel_reg[0],
+		panel_reg[1], NULL, rx_buf, 1);
+
+	rx_len = ctrl_pdata->rx_len;
+
+	for (i = 0; i < rx_len; i++) {
+		lx += snprintf(panel_reg_buf + lx, sizeof(panel_reg_buf),
+			 "%s%02x", "", rx_buf[i]);
+	}
+    if(strcmp(panel_reg_buf,"9c")!=0){
+	    printk("BBox;%s:lx =%d,panel_reg_buf= %s,data[%d]=%x\n",
+		    __func__, lx, panel_reg_buf, i, rx_buf[i]);
+    }
+	return 0;
+}
+
+/*FIH, Hubert, 20151127, use lcm regs (DBh) to work with TP FW upgrade {*/
+static bool IsReadLCM = false;
+static bool IsnewLCM = true;
+static char panel_reg2[2] = {0xdb, 0x00}; //catch lcm version
+ssize_t panel_print_status2(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
+{
+	int rx_len = 0;
+	int i, lx = 0;
+	char panel_reg_buf[128] = {0x0};
+	char rx_buf[128] = {0x0};
+
+	if (IsReadLCM)
+		return 0;
+
+	mdss_dsi_panel_cmd_read(ctrl_pdata, panel_reg2[0],
+		panel_reg2[1], NULL, rx_buf, 1);
+
+	rx_len = ctrl_pdata->rx_len;
+
+	for (i = 0; i < rx_len; i++) {
+		lx += snprintf(panel_reg_buf + lx, sizeof(panel_reg_buf),
+			"%s%02x", "", rx_buf[i]);
+	}
+	pr_info("panel_reg_buf:%s", panel_reg_buf);
+	if(strcmp(panel_reg_buf,"00")==0) // old lcm
+	{
+		pr_info("old panel\n");
+		IsnewLCM = false;
+	}
+	else if(strcmp(panel_reg_buf,"02")==0)
+	{
+		pr_info("new panel\n");
+		IsnewLCM = true;
+	}
+	else
+	{
+		pr_info("old panel\n");
+		IsnewLCM = false;
+	}
+
+	IsReadLCM = true;
+	return 0;
+}
+
+bool IsNewLCM(void)
+{
+	return IsnewLCM;
+}
+/*} FIH, Hubert, 20151127, use lcm regs (DBh) to work with TP FW upgrade*/
+
+void mdss_dsi_panel_cmds_send(struct mdss_dsi_ctrl_pdata *ctrl,
 			struct dsi_panel_cmds *pcmds, u32 flags)
 {
 	struct dcs_cmd_req cmdreq;
 	struct mdss_panel_info *pinfo;
-
+    int ret = 0;
 	pinfo = &(ctrl->panel_data.panel_info);
 	if (pinfo->dcs_cmd_by_left) {
 		if (ctrl->ndx != DSI_CTRL_LEFT)
@@ -167,7 +241,10 @@ static void mdss_dsi_panel_cmds_send(struct mdss_dsi_ctrl_pdata *ctrl,
 	cmdreq.rlen = 0;
 	cmdreq.cb = NULL;
 
-	mdss_dsi_cmdlist_put(ctrl, &cmdreq);
+	ret = mdss_dsi_cmdlist_put(ctrl, &cmdreq);
+	if(ret < 0){
+	    printk("BBox::UEC;%d::%d\n", 0, 0);
+	}
 }
 
 static char led_pwm1[2] = {0x51, 0x0};	/* DTYPE_DCS_WRITE1 */
@@ -214,6 +291,20 @@ static int mdss_dsi_request_gpios(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 			goto disp_en_gpio_err;
 		}
 	}
+
+/*<<[NBQ-16] EricHsieh,Implement the OTM1926C CTC 5.2" panel */
+	if (gpio_is_valid(ctrl_pdata->disp_ldo_gpio)) {
+		rc = gpio_request(ctrl_pdata->disp_ldo_gpio,
+						"ldo_enable");
+		if (rc) {
+			pr_err("request ldo_en gpio failed, rc=%d\n",
+				       rc);
+			goto disp_ldo_gpio_err;
+		}
+	}
+	
+/*>>[NBQ-16] EricHsieh,END */
+	
 	rc = gpio_request(ctrl_pdata->rst_gpio, "disp_rst_n");
 	if (rc) {
 		pr_err("request reset gpio failed, rc=%d\n",
@@ -248,9 +339,13 @@ rst_gpio_err:
 	if (gpio_is_valid(ctrl_pdata->disp_en_gpio))
 		gpio_free(ctrl_pdata->disp_en_gpio);
 disp_en_gpio_err:
+/*<<[NBQ-16] EricHsieh,Implement the OTM1926C CTC 5.2" panel */
+	if (gpio_is_valid(ctrl_pdata->disp_ldo_gpio))
+		gpio_free(ctrl_pdata->disp_ldo_gpio);
+disp_ldo_gpio_err:
+/*>>[NBQ-16] EricHsieh,END*/
 	return rc;
 }
-
 int mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 {
 	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
@@ -270,6 +365,13 @@ int mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 			   __func__, __LINE__);
 	}
 
+/*<<[NBQ-16] EricHsieh,Implement the OTM1926C CTC 5.2" panel */	
+	if (!gpio_is_valid(ctrl_pdata->disp_ldo_gpio)) {
+		pr_debug("%s:%d, reset line not configured\n",
+			   __func__, __LINE__);
+	}
+/*>>[NBQ-16] EricHsieh,END */
+
 	if (!gpio_is_valid(ctrl_pdata->rst_gpio)) {
 		pr_debug("%s:%d, reset line not configured\n",
 			   __func__, __LINE__);
@@ -283,11 +385,17 @@ int mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 		rc = mdss_dsi_request_gpios(ctrl_pdata);
 		if (rc) {
 			pr_err("gpio request failed\n");
+			printk("BBox::UEC;%d::%d\n", 0, 1);
 			return rc;
 		}
 		if (!pinfo->cont_splash_enabled) {
 			if (gpio_is_valid(ctrl_pdata->disp_en_gpio))
 				gpio_set_value((ctrl_pdata->disp_en_gpio), 1);
+
+/*<<[NBQ-16] EricHsieh,Implement the OTM1926C CTC 5.2" panel */
+			if (gpio_is_valid(ctrl_pdata->disp_ldo_gpio))
+				gpio_set_value((ctrl_pdata->disp_ldo_gpio), 1);
+/*>>[NBQ-16] EricHsieh,END */
 
 			for (i = 0; i < pdata->panel_info.rst_seq_len; ++i) {
 				gpio_set_value((ctrl_pdata->rst_gpio),
@@ -313,18 +421,30 @@ int mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 			pr_debug("%s: Reset panel done\n", __func__);
 		}
 	} else {
+		if (gpio_is_valid(ctrl_pdata->mode_gpio))
+			gpio_free(ctrl_pdata->mode_gpio);
+
 		if (gpio_is_valid(ctrl_pdata->bklt_en_gpio)) {
 			gpio_set_value((ctrl_pdata->bklt_en_gpio), 0);
 			gpio_free(ctrl_pdata->bklt_en_gpio);
 		}
+
+		gpio_set_value((ctrl_pdata->rst_gpio), 0);
+		gpio_free(ctrl_pdata->rst_gpio);
+
+		usleep(5000); //JY added to match CTC power off spec 20151109
+/*<<[NBQ-16] EricHsieh,Implement the OTM1926C CTC 5.2" panel */
+		if (gpio_is_valid(ctrl_pdata->disp_ldo_gpio)) {
+			gpio_set_value((ctrl_pdata->disp_ldo_gpio), 0);
+			gpio_free(ctrl_pdata->disp_ldo_gpio);
+		}
+/*>>[NBQ-16] EricHsieh,END */
+
+		usleep(1000); //JY added to match CTC power off spec 20151109
 		if (gpio_is_valid(ctrl_pdata->disp_en_gpio)) {
 			gpio_set_value((ctrl_pdata->disp_en_gpio), 0);
 			gpio_free(ctrl_pdata->disp_en_gpio);
 		}
-		gpio_set_value((ctrl_pdata->rst_gpio), 0);
-		gpio_free(ctrl_pdata->rst_gpio);
-		if (gpio_is_valid(ctrl_pdata->mode_gpio))
-			gpio_free(ctrl_pdata->mode_gpio);
 	}
 	return rc;
 }
@@ -659,7 +779,17 @@ static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
 		on_cmds = &ctrl->post_dms_on_cmds;
 
 	if (on_cmds->cmd_cnt)
+	{
+		mdss_dsi_panel_bl_ctrl(pdata, 0); //JY added to fix NBQM-435 20151123
 		mdss_dsi_panel_cmds_send(ctrl, on_cmds, CMD_REQ_COMMIT);
+	}
+	//Buda added for BBS log
+	if (1) panel_print_status(ctrl);
+	//Buda added for recovery backlight
+	if(strstr(saved_command_line, "androidboot.mode=1")!=NULL)
+	{
+		mdss_dsi_panel_bl_ctrl(pdata, 102);
+	}	
 
 end:
 	pinfo->blank_state = MDSS_PANEL_BLANK_UNBLANK;
@@ -769,7 +899,7 @@ static void mdss_dsi_parse_trigger(struct device_node *np, char *trigger,
 }
 
 
-static int mdss_dsi_parse_dcs_cmds(struct device_node *np,
+int mdss_dsi_parse_dcs_cmds(struct device_node *np,
 		struct dsi_panel_cmds *pcmds, char *cmd_key, char *link_key)
 {
 	const char *data;
@@ -1938,6 +2068,9 @@ static int mdss_panel_parse_dt(struct device_node *np,
 	rc = of_property_read_u32(np, "qcom,mdss-dsi-init-delay-us", &tmp);
 	pinfo->mipi.init_delay = (!rc ? tmp : 0);
 
+	rc = of_property_read_u32(np, "qcom,mdss-dsi-post-init-delay", &tmp);
+	pinfo->mipi.post_init_delay = (!rc ? tmp : 0);
+
 	mdss_dsi_parse_roi_alignment(np, pinfo);
 
 	mdss_dsi_parse_trigger(np, &(pinfo->mipi.mdp_trigger),
@@ -1966,6 +2099,8 @@ static int mdss_panel_parse_dt(struct device_node *np,
 	mdss_dsi_parse_panel_horizintal_line_idle(np, ctrl_pdata);
 
 	mdss_dsi_parse_dfps_config(np, ctrl_pdata);
+
+	mdss_livedisplay_parse_dt(np, pinfo);
 
 	return 0;
 
@@ -1996,6 +2131,7 @@ int mdss_dsi_panel_init(struct device_node *node,
 						__func__, __LINE__);
 	} else {
 		pr_info("%s: Panel Name = %s\n", __func__, panel_name);
+		printk("BBox;%s: Panel Name = %s\n", __func__, panel_name);
 		strlcpy(&pinfo->panel_name[0], panel_name, MDSS_MAX_PANEL_LEN);
 	}
 	rc = mdss_panel_parse_dt(node, ctrl_pdata);
