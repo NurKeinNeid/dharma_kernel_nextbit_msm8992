@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -867,23 +867,8 @@ static void subsystem_restart_wq_func(struct work_struct *work)
 	 */
 	mutex_lock(&soc_order_reg_lock);
 
-	pr_debug("[%p]: Starting restart sequence for %s\n", current,
-			desc->name);
-
-	/* NBQ-788 - Porting FIH SSR ramdump mechanism */
-	if ( (strcmp(desc->name, "modem") == 0) && enable_ramdumps ) {
-		if ((strstr(fih_failure_reason, "diagoem.c") != NULL) || (strstr(fih_failure_reason, "fih_qmi_svc.c") != NULL) ||
-		    (strstr(fih_failure_reason, "fih_nv.c") != NULL)) {
-			disable_MDM_RamDump = true;
-
-			pr_info("[%p]: disable_MDM_RamDump = %s, fih_failure_reason = %s.\n",
-			current, (disable_MDM_RamDump?"TRUE":"FALSE"), fih_failure_reason);
-		}
-	}
-	else
-		disable_MDM_RamDump = false;
-	/* end NBQ-788 */
-
+	pr_debug("[%s:%d]: Starting restart sequence for %s\n",
+			current->comm, current->pid, desc->name);
 	notify_each_subsys_device(list, count, SUBSYS_BEFORE_SHUTDOWN, NULL);
 	for_each_subsys_device(list, count, NULL, subsystem_shutdown);
 	notify_each_subsys_device(list, count, SUBSYS_AFTER_SHUTDOWN, NULL);
@@ -992,8 +977,9 @@ int subsystem_restart_dev(struct subsys_device *dev)
 	pr_info("Restart sequence requested for %s, restart_level = %s.\n",
 		name, restart_levels[dev->restart_level]);
 
-	if (WARN(disable_restart_work == DISABLE_SSR,
-		"subsys-restart: Ignoring restart request for %s.\n", name)) {
+	if (disable_restart_work == DISABLE_SSR) {
+		pr_warn("subsys-restart: Ignoring restart request for %s.\n",
+									name);
 		return 0;
 	}
 
