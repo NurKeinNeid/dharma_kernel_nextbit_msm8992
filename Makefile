@@ -380,7 +380,9 @@ KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
 		   -fno-delete-null-pointer-checks \
 		   -std=gnu89
 
-KBUILD_CFLAGS   += -Wno-unused-const-variable
+KBUILD_CFLAGS   += -Wno-unused-const-variable \
+		   -Wno-misleading-indentation \
+		   -Wno-bool-compare
 
 KBUILD_AFLAGS_KERNEL :=
 KBUILD_CFLAGS_KERNEL :=
